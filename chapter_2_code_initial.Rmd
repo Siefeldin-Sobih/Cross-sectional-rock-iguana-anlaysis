@@ -1,0 +1,118 @@
+---
+title: "Initial chapter two code"
+author: "siefeldin sobih"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  html_document: default
+  
+header-includes:
+  - |
+    ```{=latex}
+    \usepackage{fvextra}
+    \DefineVerbatimEnvironment{Highlighting}{Verbatim}{
+      breaksymbolleft={}, 
+      showspaces = false,
+      showtabs = false,
+      breaklines,
+      commandchars=\\\{\}
+    }
+    ```
+---
+\newpage
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T, cache = T,tidy="styler")
+```
+\newpage
+# Set Seed
+```{r Seed cell}
+set.seed(123568)
+```
+\newpage
+# Loading libraries
+```{r Step 1 cell- Necessary libraries, echo=TRUE, message=FALSE, warning=FALSE}
+library(qiime2R)
+library(rmarkdown)
+library(dplyr)
+library(phyloseq)
+library(vegan)
+library(data.table)
+library(readr)
+library(ggplot2)
+library(decontam)
+library(microbiome)
+library(biomeUtils)
+library(tidyverse)
+library(lme4)
+library(ANCOMBC)
+library(data.table)
+library(lme4)
+library(readr)
+library(car)
+library(MuMIn)
+library(MASS)
+library(mgcv)
+library(performance)
+library(devtools)
+library(pairwiseAdonis)
+library(MuMIn)
+library(emmeans)
+library(cowplot)
+library(patchwork)
+suppressPackageStartupMessages(library(microViz))
+```
+\newpage
+# Step: pre-zero
+```{r pre-zero step creating a matching metadata, echo=F}
+manifest_2016_pre <- read.delim("2016_manifest_rockiguana_V2", sep = "\t", header = TRUE)
+metadata_2016_pre <- read.csv("metadata_2016.csv", header=T, sep=",")
+sum(metadata_2016_pre$sample.id %in% manifest_2016_pre$sample.id)
+
+intersect(manifest_2016_pre$sample.id, metadata_2016_pre$sample.id)
+setdiff(metadata_2016_pre$sample.id, manifest_2016_pre$sample.id)
+setdiff(manifest_2016_pre$sample.id, metadata_2016_pre$sample.id)
+
+metadata2016_qiime2_final <- metadata_2016_pre %>% filter(sample.id %in% manifest_2016_pre$sample.id)
+write.csv(metadata2016_qiime2_final, "metadata2016_qiime2_final.csv", row.names = FALSE)
+
+manifest2016_qiime2_final <- manifest_2016_pre %>% filter(sample.id %in% metadata_2016_pre$sample.id)
+write.table(manifest2016_qiime2_final, "manifest2016_qiime2_final.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+
+```
+\newpage
+# Step 0: Import metadata & minor edits
+```{r Step-0-Import metadata & minor edits}
+#Importing metadata
+metadata_qiime2<- read_tsv('analysis_input/metadata2016_qiime2_final.tsv', show_col_types = F)
+unique(metadata_qiime2$species);unique(metadata_qiime2$sex);unique(metadata_qiime2$`tourism-level`);unique(metadata_qiime2$reproductive_month);unique(metadata_qiime2$visited)
+
+# Convert columns to factor:
+metadata_qiime2 <- metadata_qiime2 %>% mutate(across(c("sample-id", "unique-id","sample-type","reproductive_month","species","site","sex","tourism-level","year","date","month","reproductive_score","visited"), as.factor))
+
+#The rest of the columns are numeric
+metadata_qiime2 <- metadata_qiime2 %>%mutate(across(where(is.character), as.numeric))
+levels(metadata_qiime2$species);levels(metadata_qiime2$sex);levels(metadata_qiime2$`tourism-level`);levels(metadata_qiime2$reproductive_month);levels(metadata_qiime2$visited)
+```
+\newpage
+# Step 1: NA check
+```{r Step-1-NA percentage, eval=T}
+#Checking for columns with high NAs
+metadata_forNA<- metadata_qiime2[metadata_qiime2$`sample-type`=='sample',]
+
+missing_summary <- data.frame(column = character(), percent_missing = numeric(), stringsAsFactors = FALSE)
+
+# Loop through each column
+for (col_name in colnames(metadata_forNA)) {
+  percent_na <- sum(is.na(metadata_forNA[[col_name]])) / nrow(metadata_forNA) * 100
+  missing_summary <- rbind(missing_summary, data.frame(
+    column = col_name,
+    percent_missing = percent_na))}
+
+head(arrange(missing_summary, desc(percent_missing)),8) #The columns with more than 50% NA
+
+metadata_final <- metadata_qiime2 %>%
+  dplyr::select(-c("glucose-istat-mg-dl", "log_istat", "predicted_log_accuchek", "progesterone","e2", "follicles", "testosterone", "tail", "log_accuchek", "glucose_accuchek_source","glucose-accuchek-mg-dl"))
+
+readr::write_tsv(metadata_final, "qiime2_exported/tsvs/metadata_final.tsv")
+```
