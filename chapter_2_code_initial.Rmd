@@ -8,6 +8,9 @@ output:
     toc: true
     number_sections: true
     keep_md: true
+    code_folding: hide
+    code_download: true
+    theme: cerulean
   pdf_document: 
     latex_engine: xelatex
     toc: true
@@ -24,17 +27,30 @@ header-includes:
       commandchars=\\\{\}
 ---
 \newpage
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = T, cache = T,tidy="styler")
+```{r setup, include = FALSE}
+# set up global R options
+options(digits = 3)
+
+# set up knitr global chunk options
+knitr::opts_chunk$set(
+  fig.width = 8,
+  fig.path = "figures/",
+  echo = TRUE,
+  eval = TRUE,
+  results = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  cache = TRUE,
+  tidy = "styler")
 ```
 \newpage
 # Set Seed
-```{r Seed call}
+```{r Setting Seed}
 set.seed(123568)
 ```
 \newpage
 # Loading libraries
-```{r Step 1 cell- Necessary libraries, echo=TRUE, message=FALSE, warning=FALSE}
+```{r Essential Libraries}
 library(qiime2R)
 library(rmarkdown)
 library(dplyr)
@@ -64,55 +80,200 @@ library(emmeans)
 library(cowplot)
 library(patchwork)
 suppressPackageStartupMessages(library(microViz))
+library(lintr)
+#Change this to RMD location
+lintr::lint("chapter_2_code_initial.Rmd")
 ```
 \newpage
-# Step: pre-zero
-```{r pre-zero step creating a matching metadata, echo=F}
-manifest_2016_pre <- read.delim("pre_analysis_prep/2016_manifest_rockiguana_V2", sep = "\t", header = TRUE)
-metadata_2016_pre <- read.csv("pre_analysis_prep/metadata_2016.csv", header=T, sep=",")
+# Step 1: Importing, Editing, and Exporting Metadata and Manifest files
+```{r 1 Importing, Editing, and Exporting Metadata and Manifest files, message = FALSE, results = FALSE}
+#Upload metadata and manifest (used in qiime2) file
+#Manifest IDs are used to match Metadata ID to have equal IDs in the analysis
+manifest_2016_pre <- read.delim("pre_analysis_prep/2016_manifest_rockiguana_V2",
+                                sep = "\t", header = TRUE)
+metadata_2016_pre <- read.csv("pre_analysis_prep/metadata_2016.csv", header = TRUE,
+                              sep = ",")
 sum(metadata_2016_pre$sample.id %in% manifest_2016_pre$sample.id)#255 metadata ID found in Manifest ID
-
+#Check for what 2 missing IDs were found
 setdiff(manifest_2016_pre$sample.id, metadata_2016_pre$sample.id)#F11 and Undetermined (Missing sample IDs)
-
+#Only keep matching IDs found in manifest ID column
 metadata2016_qiime2_initial <- metadata_2016_pre %>% filter(sample.id %in% manifest_2016_pre$sample.id)
-write.csv(metadata2016_qiime2_initial, "metadata2016_qiime2_matchID_initial.csv", row.names = FALSE)
-
+#Only keep matching IDs found in Metadata ID column (not important for qiime2 analysis)
 manifest2016_qiime2_final <- manifest_2016_pre %>% filter(sample.id %in% metadata_2016_pre$sample.id)
 write.table(manifest2016_qiime2_final, "manifest2016_qiime2_final.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+#Create a new variable for metadata editing and further downstream analysis
+metadata_qiime2<- metadata2016_qiime2_initial
+#Any empty space is NA
+metadata_qiime2[metadata_qiime2 == ""] <- NA
+#Check for unique observations in each column
+unique(metadata_qiime2$species);unique(metadata_qiime2$sex);unique(metadata_qiime2$tourism.level);unique(metadata_qiime2$repro_score);unique(metadata_qiime2$visited)
+#Transform each character column / categorical to factor
+metadata_qiime2 <- metadata_qiime2 %>% mutate(across(c("sample.id","iguana.id","unique.id","sample.type","species","site","sex","tourism.level","visited","year","date","month","repro_month","repro_score"), as.factor))
+#Transform the rest of the columns to numeric
+metadata_qiime2 <- metadata_qiime2 %>% mutate(across(where(is.character), as.numeric))
+#Calculate body mass index - referenced in thesis
+metadata_qiime2$body_mass_index<- as.numeric(metadata_qiime2$mass) / as.numeric(metadata_qiime2$svl)^2
+#Check ranges for all numerical columns
+summary(metadata_qiime2[sapply(metadata_qiime2, is.numeric)])
+#Quick check on dataframe structure
+str(metadata_qiime2)
 ```
 \newpage
-# Step 0: Import metadata & minor edits
-```{r Step-0-Import metadata & minor edits}
-#Importing metadata
-metadata_qiime2<- read_tsv('analysis_input/metadata2016_qiime2_final.tsv', show_col_types = F)
-unique(metadata_qiime2$species);unique(metadata_qiime2$sex);unique(metadata_qiime2$`tourism-level`);unique(metadata_qiime2$reproductive_month);unique(metadata_qiime2$visited)
-
-# Convert columns to factor:
-metadata_qiime2 <- metadata_qiime2 %>% mutate(across(c("sample-id", "unique-id","sample-type","reproductive_month","species","site","sex","tourism-level","year","date","month","reproductive_score","visited"), as.factor))
-
-#The rest of the columns are numeric
-metadata_qiime2 <- metadata_qiime2 %>%mutate(across(where(is.character), as.numeric))
-levels(metadata_qiime2$species);levels(metadata_qiime2$sex);levels(metadata_qiime2$`tourism-level`);levels(metadata_qiime2$reproductive_month);levels(metadata_qiime2$visited)
-```
-\newpage
-# Step 1: NA check
-```{r Step-1-NA percentage, eval=T}
+# Step 2: Checking for variables with the most missing data
+```{r 2 Missing data count, message = TRUE}
 #Checking for columns with high NAs
-metadata_forNA<- metadata_qiime2[metadata_qiime2$`sample-type`=='sample',]
+na_in_metadata <- metadata_qiime2[metadata_qiime2$sample.type=='sample',]
 
-missing_summary <- data.frame(column = character(), percent_missing = numeric(), stringsAsFactors = FALSE)
+na_summary <- data.frame(column = character(), percent_missing = numeric(), stringsAsFactors = FALSE)
 
-# Loop through each column
-for (col_name in colnames(metadata_forNA)) {
-  percent_na <- sum(is.na(metadata_forNA[[col_name]])) / nrow(metadata_forNA) * 100
-  missing_summary <- rbind(missing_summary, data.frame(
+for (col_name in colnames(na_in_metadata)) {
+  percent_na <- sum(is.na(na_in_metadata[[col_name]])) / nrow(na_in_metadata) * 100
+  na_summary <- rbind(na_summary, data.frame(
     column = col_name,
     percent_missing = percent_na))}
 
-head(arrange(missing_summary, desc(percent_missing)),8) #The columns with more than 50% NA
+head(arrange(na_summary, desc(percent_missing)),8) #The columns with more than 50% NA
 
-metadata_final <- metadata_qiime2 %>%
-  dplyr::select(-c("glucose-istat-mg-dl", "log_istat", "predicted_log_accuchek", "progesterone","e2", "follicles", "testosterone", "tail", "log_accuchek", "glucose_accuchek_source","glucose-accuchek-mg-dl"))
+metadata_final <- metadata_qiime2 %>% dplyr::select(-c("progesterone","e2"))
 
-readr::write_tsv(metadata_final, "qiime2_exported/tsvs/metadata_final.tsv")
+readr::write_tsv(metadata_final, "analysis_input/metadata_2016_final.tsv")
 ```
+\newpage
+# Step 3: Creating Phyloseq object
+```{r 3 Phyloseq object, message=TRUE}
+ps_16<- qza_to_phyloseq(
+    features= "analysis_input/feature2016table.qza",
+    tree = "analysis_input/rooted2016-tree.qza",
+    taxonomy = "analysis_input/classified2016taxonomy.qza",
+    metadata = 'analysis_input/metadata_2016_final.tsv')
+ps_16
+```
+\newpage
+# Step 4: Pre-processing phyloseq object
+```{r 4 Chloroplast and Mitochondria removal, message=TRUE}
+#Check if any sample name has ZYM (mock communities)
+sum(grepl("ZYM", sample_names(ps_16)))
+#Mitochondria filtration 
+"Mitochondria" %in% tax_table(ps_16)[, "Family"]
+ps_16_nomitochondria <- subset_taxa(ps_16, Family != "Mitochondria")
+ntaxa(ps_16_nomitochondria)#Lost 1048 -> 7314 left
+"Mitochondria" %in% tax_table(ps_16_nomitochondria)[, "Family"]
+#Chloroplast filtration:
+"Chloroplast" %in% tax_table(ps_16_nomitochondria)[, "Order"]
+ps_16_nomitono_chloro <- subset_taxa(ps_16_nomitochondria, Order != "Chloroplast")
+ntaxa(ps_16_nomitono_chloro)#7285 after removal of 29 chloroplast classification
+
+"Chloroplast" %in% tax_table(ps_16_nomitono_chloro)[, "Order"]
+"Mitochondria" %in% tax_table(ps_16_nomitono_chloro)[, "Family"]
+```
+\newpage
+# Step 5: Decontamination and control removal of phyloseq
+```{r Step 5 Decontamination and Control removal}
+sample_data(ps_16_nomitono_chloro)$is.neg <- sample_data(ps_16_nomitono_chloro)$sample.type == "control"
+contamdf_prev <- isContaminant(ps_16_nomitono_chloro, method="prevalence", neg="is.neg")
+table(contamdf_prev$contaminant)#Total of 27 contaminants
+
+contamdf_prev05 <- isContaminant(ps_16_nomitono_chloro, method="prevalence", neg="is.neg", threshold=0.5)
+table(contamdf_prev05$contaminant)#Found 82 contaminants.
+
+#Extract names of non-contaminated data 
+not_contaminant <- row.names(contamdf_prev05[contamdf_prev05[,"contaminant"] == "FALSE",])
+#Retain only non-contaminated taxa
+ps_decontaminated <- prune_taxa(not_contaminant, ps_16_nomitono_chloro)
+ntaxa(ps_decontaminated) # 7203 - removed 82
+
+# remove negative controls (control samples)
+ps_decontaminated <- prune_samples(sample_data(ps_decontaminated)$sample.type != "control", ps_decontaminated)
+table(sample_data(ps_decontaminated)$sample.type) #18 control removed - 237 samples left
+
+ps_decontaminated_filtered_tax <- subset_taxa(ps_decontaminated, !is.na(Phylum))#Phylum not NA
+ps_decontaminated_filtered_tax #No change
+```
+\newpage
+# Step 6: Filter features not seen at least 10 times in each sample
+```{r Step 6 Low abundance}
+# New approach: Filter taxa with fewer than 10 sequences from individual samples
+otu_mat <- as(otu_table(ps_decontaminated_filtered_tax), "matrix")
+otu_mat[otu_mat < 10] <- 0 #Filter ASVs PER sample that don't show up 10 times
+taxa_to_keep <- rownames(otu_mat)[rowSums(otu_mat) > 0] #This removes any ASV that doesn't have atleast 10 reads in one sample
+ps_decontaminated_filtered_tax_kept <- prune_taxa(taxa_to_keep, ps_decontaminated_filtered_tax)
+ps_decontaminated_filtered_tax_kept #3960 taxa kept --> Lost 3243 taxa
+```
+\newpage
+# Step 7: Filter samples for sequencing depth
+```{r 7 Sequencing depth}
+#Remove samples with fewer than 1000 reads
+ps_decontaminated_filtered_tax_kept_filteredsample <- prune_samples(sample_sums(ps_decontaminated_filtered_tax_kept) >= 1000, ps_decontaminated_filtered_tax_kept)
+nsamples(ps_decontaminated_filtered_tax_kept_filteredsample)#No Change
+
+ps_ch2<-ps_decontaminated_filtered_tax_kept_filteredsample#Use this!
+
+#Version for non Z-transformed covarites 
+ps_ch2_noZscore<- ps_ch2
+
+#Z-score transformation for all continuous predictors that will be used downstream based on previous runs
+ps_ch2_temp_meta <- data.frame((sample_data(ps_ch2)))
+
+ps_ch2_temp_meta <- ps_ch2_temp_meta %>% mutate(across(c(svl, tail, mass, glucose, true.triglycerides, testosterone, corticosterone, bacterial.killing.ability,glycerol,true.triglycerides,droms,antioxidants.index,body_mass_index), ~as.numeric(scale(.))))
+
+#Thenn Replace metadata in ps_ch2
+sample_data(ps_ch2) <- sample_data(ps_ch2_temp_meta)
+```
+\newpage
+# Step 8: Relative abundance
+```{r Step 8 relative abundance}
+ps_relative<- ps_ch2
+phyloseq_validate(ps_relative, remove_undetected = FALSE,min_tax_length = 4,verbose = TRUE)
+
+ps_relative <- ps_relative %>% tax_fix()
+ps_relative <- ps_relative %>% tax_fix(unknowns = c("Incertae_Sedis"))
+
+#Phyloseq summary post-filteration
+summary(sample_sums(ps_relative))
+sum(otu_table(ps_relative))
+dim(otu_table(ps_relative))
+length(unique(tax_table(ps_relative)[, "Phylum"]))#38 Phylum
+length(unique(tax_table(ps_relative)[, "Class"]))#86 Class
+length(unique(tax_table(ps_relative)[, "Order"]))#175 Order
+length(unique(tax_table(ps_relative)[, "Family"]))#312 Families
+length(unique(tax_table(ps_relative)[, "Genus"]))#678 Families
+length(unique(tax_table(ps_relative)[, "Species"]))#564 Species
+
+#Abundance table
+kingdom_abundance <- ps_relative %>%
+  tax_agg("Kingdom") %>%
+  psmelt() %>%
+  group_by(Kingdom) %>%
+  summarise(Total_Abundance = sum(Abundance)) %>%
+  mutate(Percent = round(Total_Abundance / sum(Total_Abundance) * 100, 2)) %>%
+  filter(Total_Abundance >= 2) %>%
+  arrange(desc(Total_Abundance))
+
+phylum_abundance <- ps_relative %>%
+  tax_agg("Phylum") %>%
+  psmelt() %>%
+  group_by(Phylum) %>%
+  summarise(Total_Abundance = sum(Abundance)) %>%
+  mutate(Percent = round(Total_Abundance / sum(Total_Abundance) * 100, 2)) %>%
+  filter(Total_Abundance >= 2) %>%
+  arrange(desc(Total_Abundance))
+
+ps_relative %>%
+  tax_agg("Phylum") %>%
+  ps_seriate(dist = "bray", method = "OLO_ward", tax_transform = 'compositional') %>%
+  tax_filter(min_sample_abundance = 0.02) %>% #There is the other option of using min_sample_abundance instead of looking at the mean threshold, it looks at threshold applied in atleast one sample (Allows rare taxa, unlike mean threshold - core)
+  comp_barplot(tax_level = "Phylum", sample_order = "asis", n_taxa = 10, palette = distinct_palette(pal = "brewerPlus")) + #kelley is cool too
+  coord_flip()+
+  ggtitle("Phylum-Level Relative Abundance - Core Microbiome")+
+  ylab("Relative Abundance (≥ 2% Mean Threshold)")+
+  theme(
+    axis.text.y = element_blank(),    # Remove sample names
+    axis.ticks.y = element_blank(),    # Remove tick marks
+    legend.text = element_text(size = 13),
+    axis.title.y = element_text(size = 14),
+    plot.title = element_text(size = 13, hjust = 0.5)
+    )
+
+ggsave("relativeabundanceallphylum.png", width = 10, height = 8, dpi = 300)
+```
+\newpage
