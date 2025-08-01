@@ -3,10 +3,15 @@ title: "Initial chapter two code"
 author: "siefeldin sobih"
 date: "`r Sys.Date()`"
 output:
-  pdf_document:
-    latex_engine: xelatex
-  html_document: default
   
+  html_document: 
+    toc: true
+    number_sections: true
+    keep_md: true
+  pdf_document: 
+    latex_engine: xelatex
+    toc: true
+    number_sections: true
 header-includes:
   - |
     ```{=latex}
@@ -17,8 +22,6 @@ header-includes:
       showtabs = false,
       breaklines,
       commandchars=\\\{\}
-    }
-    ```
 ---
 \newpage
 ```{r setup, include=FALSE}
@@ -26,7 +29,7 @@ knitr::opts_chunk$set(echo = T, cache = T,tidy="styler")
 ```
 \newpage
 # Set Seed
-```{r Seed cell}
+```{r Seed call}
 set.seed(123568)
 ```
 \newpage
@@ -65,20 +68,17 @@ suppressPackageStartupMessages(library(microViz))
 \newpage
 # Step: pre-zero
 ```{r pre-zero step creating a matching metadata, echo=F}
-manifest_2016_pre <- read.delim("2016_manifest_rockiguana_V2", sep = "\t", header = TRUE)
-metadata_2016_pre <- read.csv("metadata_2016.csv", header=T, sep=",")
-sum(metadata_2016_pre$sample.id %in% manifest_2016_pre$sample.id)
+manifest_2016_pre <- read.delim("pre_analysis_prep/2016_manifest_rockiguana_V2", sep = "\t", header = TRUE)
+metadata_2016_pre <- read.csv("pre_analysis_prep/metadata_2016.csv", header=T, sep=",")
+sum(metadata_2016_pre$sample.id %in% manifest_2016_pre$sample.id)#255 metadata ID found in Manifest ID
 
-intersect(manifest_2016_pre$sample.id, metadata_2016_pre$sample.id)
-setdiff(metadata_2016_pre$sample.id, manifest_2016_pre$sample.id)
-setdiff(manifest_2016_pre$sample.id, metadata_2016_pre$sample.id)
+setdiff(manifest_2016_pre$sample.id, metadata_2016_pre$sample.id)#F11 and Undetermined (Missing sample IDs)
 
-metadata2016_qiime2_final <- metadata_2016_pre %>% filter(sample.id %in% manifest_2016_pre$sample.id)
-write.csv(metadata2016_qiime2_final, "metadata2016_qiime2_final.csv", row.names = FALSE)
+metadata2016_qiime2_initial <- metadata_2016_pre %>% filter(sample.id %in% manifest_2016_pre$sample.id)
+write.csv(metadata2016_qiime2_initial, "metadata2016_qiime2_matchID_initial.csv", row.names = FALSE)
 
 manifest2016_qiime2_final <- manifest_2016_pre %>% filter(sample.id %in% metadata_2016_pre$sample.id)
 write.table(manifest2016_qiime2_final, "manifest2016_qiime2_final.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
-
 ```
 \newpage
 # Step 0: Import metadata & minor edits
