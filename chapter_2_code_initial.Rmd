@@ -81,8 +81,7 @@ library(cowplot)
 library(patchwork)
 suppressPackageStartupMessages(library(microViz))
 library(lintr)
-#Change this to RMD location
-lintr::lint("chapter_2_code_initial.Rmd")
+library(forecast)
 ```
 \newpage
 # Step 1: Importing, Editing, and Exporting Metadata and Manifest files
@@ -105,10 +104,12 @@ write.table(manifest2016_qiime2_final, "manifest2016_qiime2_final.tsv", sep = "\
 metadata_qiime2<- metadata2016_qiime2_initial
 #Any empty space is NA
 metadata_qiime2[metadata_qiime2 == ""] <- NA
+#Create new Reproductive Season Categorical variable from month column
+metadata_qiime2$reproductive_season <- case_when(metadata_qiime2$month == "may" ~ "Breeding", metadata_qiime2$month == "june" ~ "Oviposition",metadata_qiime2$month == "september" ~ "Post-Breeding")
 #Check for unique observations in each column
 unique(metadata_qiime2$species);unique(metadata_qiime2$sex);unique(metadata_qiime2$tourism.level);unique(metadata_qiime2$repro_score);unique(metadata_qiime2$visited)
 #Transform each character column / categorical to factor
-metadata_qiime2 <- metadata_qiime2 %>% mutate(across(c("sample.id","iguana.id","unique.id","sample.type","species","site","sex","tourism.level","visited","year","date","month","repro_month","repro_score"), as.factor))
+metadata_qiime2 <- metadata_qiime2 %>% mutate(across(c("sample.id","iguana.id","unique.id","sample.type","species","site","sex","tourism.level","visited","year","date","month","repro_month","repro_score","reproductive_season"), as.factor))
 #Transform the rest of the columns to numeric
 metadata_qiime2 <- metadata_qiime2 %>% mutate(across(where(is.character), as.numeric))
 #Calculate body mass index - referenced in thesis
@@ -134,7 +135,7 @@ for (col_name in colnames(na_in_metadata)) {
 
 head(arrange(na_summary, desc(percent_missing)),8) #The columns with more than 50% NA
 
-metadata_final <- metadata_qiime2 %>% dplyr::select(-c("progesterone","e2"))
+metadata_final <- metadata_qiime2
 
 readr::write_tsv(metadata_final, "analysis_input/metadata_2016_final.tsv")
 ```
@@ -206,74 +207,158 @@ ps_decontaminated_filtered_tax_kept #3960 taxa kept --> Lost 3243 taxa
 ps_decontaminated_filtered_tax_kept_filteredsample <- prune_samples(sample_sums(ps_decontaminated_filtered_tax_kept) >= 1000, ps_decontaminated_filtered_tax_kept)
 nsamples(ps_decontaminated_filtered_tax_kept_filteredsample)#No Change
 
-ps_ch2<-ps_decontaminated_filtered_tax_kept_filteredsample#Use this!
+ps_ch2<-ps_decontaminated_filtered_tax_kept_filteredsample#Original PS preserved
+
+ps_ch2_temp_meta <- data.frame(sample_data(ps_ch2))
+
+#Dataframe exportation to apply metadata transformation that was lost during phyloseq conversion
+ps_ch2_temp_meta <- ps_ch2_temp_meta %>% mutate(across(c("iguana.id","unique.id","sample.type","species","site","sex","tourism.level","visited","year","date","month","repro_month","repro_score","reproductive_season"), as.factor))
+
+sample_data(ps_ch2) <- sample_data(ps_ch2_temp_meta)#Replace metadata for correct factorial transformation
 
 #Version for non Z-transformed covarites 
-ps_ch2_noZscore<- ps_ch2
+ps_ch2_noZscore<- ps_ch2 #Non-continuous transformed PS object for Visualization
+#Version for Z-transformation
+ps_ch2_zscore<- ps_ch2 #Non-continuous transformed PS object for Visualization
 
 #Z-score transformation for all continuous predictors that will be used downstream based on previous runs
-ps_ch2_temp_meta <- data.frame((sample_data(ps_ch2)))
-
-ps_ch2_temp_meta <- ps_ch2_temp_meta %>% mutate(across(c(svl, tail, mass, glucose, true.triglycerides, testosterone, corticosterone, bacterial.killing.ability,glycerol,true.triglycerides,droms,antioxidants.index,body_mass_index), ~as.numeric(scale(.))))
+ps_ch2_temp_meta <- ps_ch2_temp_meta %>% mutate(across(c(svl, tail, mass, glucose, true.triglycerides, testosterone, corticosterone, bacterial.killing.ability,glycerol,true.triglycerides,droms,antioxidants.index,body_mass_index,progesterone,e2), ~as.numeric(scale(.))))
 
 #Thenn Replace metadata in ps_ch2
-sample_data(ps_ch2) <- sample_data(ps_ch2_temp_meta)
+sample_data(ps_ch2_zscore) <- sample_data(ps_ch2_temp_meta) #Z-score transformed PS Object for downstream analysis
 ```
 \newpage
-# Step 8: Relative abundance
-```{r Step 8 relative abundance}
-ps_relative<- ps_ch2
-phyloseq_validate(ps_relative, remove_undetected = FALSE,min_tax_length = 4,verbose = TRUE)
+# Step 8: Data Explorations (Ordination, Inflation factors, LMM)
+```{r}
+#First pass the phyloseq object to investigate any issues with taxonomy
+ps_relative<- ps_ch2_zscore
+#Validate Taxonomy and Check for errors in Phyloseq object
+phyloseq_validate(ps_relative, remove_undetected = FALSE,min_tax_length = 4,verbose = TRUE)#None found
+ps_relative <- ps_relative %>% tax_fix()#No fixes applied, phyloseq ready for further downstream analysis
+#Faith calculation from phyloseq and rooted tree
+ps_faith<- calculatePD(ps_relative, justDF = TRUE, include_root = TRUE)
 
-ps_relative <- ps_relative %>% tax_fix()
-ps_relative <- ps_relative %>% tax_fix(unknowns = c("Incertae_Sedis"))
 
-#Phyloseq summary post-filteration
-summary(sample_sums(ps_relative))
-sum(otu_table(ps_relative))
-dim(otu_table(ps_relative))
-length(unique(tax_table(ps_relative)[, "Phylum"]))#38 Phylum
-length(unique(tax_table(ps_relative)[, "Class"]))#86 Class
-length(unique(tax_table(ps_relative)[, "Order"]))#175 Order
-length(unique(tax_table(ps_relative)[, "Family"]))#312 Families
-length(unique(tax_table(ps_relative)[, "Genus"]))#678 Families
-length(unique(tax_table(ps_relative)[, "Species"]))#564 Species
+#How does the factors look like with only progesterone and e2 in the data?
+ps_faith_prog_only <- ps_faith[!is.na(ps_faith$e2), ]
+ps_faith_prog_only<-droplevels(ps_faith_prog_only)
+str(ps_faith_prog_only)
+unique(ps_faith_prog_only$sex)
+nrow(ps_faith_prog_only)#95 out of 237! (Lost 142 samples)
 
-#Abundance table
-kingdom_abundance <- ps_relative %>%
-  tax_agg("Kingdom") %>%
-  psmelt() %>%
-  group_by(Kingdom) %>%
-  summarise(Total_Abundance = sum(Abundance)) %>%
-  mutate(Percent = round(Total_Abundance / sum(Total_Abundance) * 100, 2)) %>%
-  filter(Total_Abundance >= 2) %>%
-  arrange(desc(Total_Abundance))
+#Checking for collinear variables
+#Steps that I took after VIF produced an error:
+# site and sex produce "there are aliased coefficients in the model" removed both and re-ran the model.
+# progesterone and e2 are PERFECTLY collinear with reproductive score
+# progesterone and e2 are HIGHLY collinear with reproductive season (14GVIF/1.94), glycerol(7.44/2.73), true.triglycerides(7.94/2.82), and droms (5.12/2.26) AFTER the removal of Reproductive score.
 
-phylum_abundance <- ps_relative %>%
-  tax_agg("Phylum") %>%
-  psmelt() %>%
-  group_by(Phylum) %>%
-  summarise(Total_Abundance = sum(Abundance)) %>%
-  mutate(Percent = round(Total_Abundance / sum(Total_Abundance) * 100, 2)) %>%
-  filter(Total_Abundance >= 2) %>%
-  arrange(desc(Total_Abundance))
+#Variance inflation, ran multiple times, noted above results, RMD doesn't let it run if it produces errors
+vif(lm(PD ~  species + tourism.level + reproductive_season + glucose  + testosterone + repro_score + corticosterone + bacterial.killing.ability + glycerol + true.triglycerides + droms + antioxidants.index + body_mass_index, data = ps_faith))
 
-ps_relative %>%
-  tax_agg("Phylum") %>%
-  ps_seriate(dist = "bray", method = "OLO_ward", tax_transform = 'compositional') %>%
-  tax_filter(min_sample_abundance = 0.02) %>% #There is the other option of using min_sample_abundance instead of looking at the mean threshold, it looks at threshold applied in atleast one sample (Allows rare taxa, unlike mean threshold - core)
-  comp_barplot(tax_level = "Phylum", sample_order = "asis", n_taxa = 10, palette = distinct_palette(pal = "brewerPlus")) + #kelley is cool too
-  coord_flip()+
-  ggtitle("Phylum-Level Relative Abundance - Core Microbiome")+
-  ylab("Relative Abundance (≥ 2% Mean Threshold)")+
+ps_faith$BOXPD <- forecast::BoxCox(ps_faith$PD, lambda = "auto")
+
+#Checking faith distribution for PD model below
+hist(ps_faith$PD);hist(log(ps_faith$PD));hist(sqrt(ps_faith$PD));hist(ps_faith$BOXPD)
+
+#Testing assumptions of normality
+shapiro.test(ps_faith$PD)
+qqnorm(ps_faith$PD); qqline(ps_faith$PD)
+
+shapiro.test(sqrt(ps_faith$PD))
+qqnorm(sqrt(ps_faith$PD)); qqline(sqrt(ps_faith$PD))
+
+shapiro.test(log(ps_faith$PD))
+qqnorm(log(ps_faith$PD)); qqline(log(ps_faith$PD))
+
+shapiro.test(ps_faith$BOXPD)
+qqnorm(ps_faith$BOXPD); qqline(ps_faith$BOXPD)
+
+# Checking for LMM for every variable in the model
+#Despite BOXCOX passing shapiro significance test, it breaks homoscedasticity assumption making P values null, and it has a high AIC (727)
+#Reverted to sqrt for low 
+test_PD_proe2<- lmerTest::lmer(log(PD) ~  species + tourism.level  + reproductive_season + glucose + testosterone + repro_score + corticosterone  + bacterial.killing.ability + glycerol + true.triglycerides + droms + antioxidants.index + body_mass_index + progesterone + e2 + (1|unique.id), data = ps_faith)
+
+summary(test_PD_proe2);plot(test_PD_proe2);AIC(test_PD_proe2)#121 - Only species as significant
+check_heteroscedasticity(test_PD_proe2)#Model assumption kept with log not raw
+Anova(test_PD_proe2)
+
+
+test_PD_NOproe2<- lmerTest::lmer(log((PD)) ~  species + tourism.level  + reproductive_season + glucose + testosterone + repro_score + corticosterone  + bacterial.killing.ability + glycerol + true.triglycerides + droms + antioxidants.index + body_mass_index + (1|unique.id), data = ps_faith)
+
+summary(test_PD_NOproe2);plot(test_PD_NOproe2);AIC(test_PD_NOproe2)#410
+check_heteroscedasticity(test_PD_NOproe2)#model assumption broken EVEN with reproductive score tested and removed
+Anova(test_PD_NOproe2)
+
+# Testing Ordination
+ps_ordination_test <- ps_relative
+ps_ordination_test_df <- data.frame(sample_data(ps_ordination_test))
+
+ps_ordination_test_df %>% dplyr::select(-c(e2, progesterone))
+
+ps_ordination_test_df <- ps_ordination_test_df %>%
+  dplyr::select(species, tourism.level, reproductive_season, glucose, testosterone, repro_score, corticosterone,
+                bacterial.killing.ability, glycerol,droms, true.triglycerides, droms, antioxidants.index) %>%
+  tidyr::drop_na()
+
+ps_ordination_test_df <- ps_ordination_test_df %>% mutate(across(c("species", "tourism.level", "reproductive_season", "repro_score"), as.factor))
+
+ps_ordination_test <- prune_samples(sample_names(ps_ordination_test) %in% rownames(ps_ordination_test_df), ps_ordination_test)
+
+sample_data(ps_ordination_test) <- sample_data(ps_ordination_test_df)
+
+length(sample_names(ps_ordination_test))#188 without any NA - Lost 49 samples
+
+#Ordination transformed BC for exploration
+# Log1p transforms using log(1 + x), safe for zero values
+ps_ordination_test <- transform_sample_counts(ps_ordination_test, function(x) log1p(x))
+ps_ordination_test_ordination<- ordinate(ps_ordination_test, method = "PCoA", distance = "bray", formula = NULL)
+
+#Transformed Bray Curtis visualization
+test_ord_1<- plot_ordination(ps_ordination_test, ps_ordination_test_ordination, color = "species") +
+  geom_point(size = 2) +
+  labs(color = "Sub-species")+
+  theme_minimal() +
+  stat_ellipse(type = "t", linetype = "solid") +
   theme(
-    axis.text.y = element_blank(),    # Remove sample names
-    axis.ticks.y = element_blank(),    # Remove tick marks
-    legend.text = element_text(size = 13),
-    axis.title.y = element_text(size = 14),
-    plot.title = element_text(size = 13, hjust = 0.5)
-    )
+    legend.title = element_text(size = 16),
+    plot.title = element_text(size = 16),
+    axis.title = element_text(size = 16),legend.text = element_text(size = 16)
+  )
 
-ggsave("relativeabundanceallphylum.png", width = 10, height = 8, dpi = 300)
+test_ord_2<-plot_ordination(ps_ordination_test, ps_ordination_test_ordination, color = "tourism.level") +
+  geom_point(size = 2) +
+  labs(color = "Tourism Category")+
+  theme_minimal() +
+  stat_ellipse(type = "t", linetype = "solid") +
+  theme(
+    legend.title = element_text(size = 16),
+    plot.title = element_text(size = 16),
+    axis.title = element_text(size = 16),legend.text = element_text(size = 16)
+  )
+
+test_ord_3<-plot_ordination(ps_ordination_test, ps_ordination_test_ordination, color = "reproductive_season") +
+  geom_point(size = 2) +
+  labs(color = "Reproductive Season")+
+  theme_minimal() +
+  stat_ellipse(type = "t", linetype = "solid") +
+  theme(
+    legend.title = element_text(size = 16),
+    plot.title = element_text(size = 16),
+    axis.title = element_text(size = 16),legend.text = element_text(size = 16)
+  )
+
+test_ord_4<-plot_ordination(ps_ordination_test, ps_ordination_test_ordination, color = "repro_score") +
+  geom_point(size = 2) +
+  labs(color = "Reproductive Score")+
+  theme_minimal() +
+  stat_ellipse(type = "t", linetype = "solid") +
+  theme(
+    legend.title = element_text(size = 16),
+    plot.title = element_text(size = 16),
+    axis.title = element_text(size = 16),legend.text = element_text(size = 16)
+  )
+
+test_ordination_combined <- test_ord_1 + test_ord_2 +test_ord_3 +test_ord_4 + plot_annotation(tag_levels = 'A')
+ggsave("test_ordination_com.png", plot = test_ordination_combined, width = 16, height = 6, dpi = 300)
 ```
-\newpage
+
